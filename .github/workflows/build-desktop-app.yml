@@ -1,0 +1,114 @@
+# Builds the GDevelop desktop app (Electron) for Windows, macOS and Linux.
+#
+# Unlike upstream (which builds on CircleCI), this workflow does not rebuild
+# GDevelop.js: a pre-built libGD.js is downloaded from S3 by
+# newIDE/app/scripts/import-libGD.js during `npm install`. REQUIRES_EXACT_LIBGD_JS_VERSION
+# is deliberately NOT set, so the download can fall back to `master/latest`
+# for commits that have no matching S3 build (which is always the case in a fork).
+#
+# Builds are unsigned (GD_PORTABLE_BUILD=true): no Apple Developer ID and no
+# Windows Authenticode certificate are needed.
+
+name: Build Desktop App
+
+on:
+  # Manual trigger. Note: GitHub only shows the "Run workflow" button once this
+  # file is present on the repository's default branch.
+  workflow_dispatch:
+  push:
+    # Pushing to a `ci/...` branch builds all three platforms straight away,
+    # which is how this workflow can be run before it reaches the default branch.
+    branches:
+      - "ci/**"
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform_args: "--win nsis zip"
+            artifact: GDevelop-windows
+            node_heap: 7168
+          - os: macos-latest
+            platform_args: "--mac"
+            artifact: GDevelop-macos
+            # macos-latest runners only have 7 GB of RAM.
+            node_heap: 6144
+          - os: ubuntu-latest
+            platform_args: "--linux"
+            artifact: GDevelop-linux
+            node_heap: 7168
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      GD_PORTABLE_BUILD: "true"
+      NODE_OPTIONS: "--max-old-space-size=${{ matrix.node_heap }}"
+      # create-react-app turns warnings into errors when CI=true, which GitHub
+      # sets by default. Upstream does the same with `CI=false npm run build`.
+      CI: "false"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Needed for the libGD.js download fallback chain (HEAD~1 .. HEAD~3).
+          fetch-depth: 50
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            newIDE/app/package-lock.json
+            newIDE/electron-app/package-lock.json
+            newIDE/electron-app/app/package-lock.json
+            GDJS/package-lock.json
+
+      - name: Install Linux packaging dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y icnsutils graphicsmagick rsync
+
+      - name: Install setuptools (distutils was removed in Python 3.12)
+        if: runner.os == 'Windows'
+        run: pip install setuptools
+
+      - name: Cache Electron downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+          key: ${{ runner.os }}-electron-${{ hashFiles('newIDE/electron-app/package-lock.json') }}
+
+      - name: Install editor dependencies (downloads pre-built libGD.js)
+        run: npm install
+        working-directory: newIDE/app
+
+      - name: Install electron-app dependencies
+        run: npm install
+        working-directory: newIDE/electron-app
+
+      - name: Build and package
+        run: npm run build -- ${{ matrix.platform_args }} --publish never
+        working-directory: newIDE/electron-app
+
+      - name: Remove unpacked folders (saves ~1 GB per artifact)
+        shell: bash
+        run: |
+          rm -rf dist/win-unpacked dist/linux-unpacked dist/linux-arm64-unpacked \
+                 "dist/mac-universal/GDevelop 5.app" "dist/mac/GDevelop 5.app"
+        working-directory: newIDE/electron-app
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: newIDE/electron-app/dist
+          retention-days: 14
