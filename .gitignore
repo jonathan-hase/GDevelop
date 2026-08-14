@@ -34,3 +34,8 @@
 .Trashes
 Thumbs.db
 .claude
+
+# Local notes, research and scratch artifacts. Never part of the project.
+/CLAUDE/
+research-cache/
+*.jsonl

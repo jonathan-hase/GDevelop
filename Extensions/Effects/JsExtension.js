@@ -1320,6 +1320,49 @@ module.exports = {
       .setType('number')
       .setDescription(_('Padding for the visual effect area'));
 
+    const genZoomBlurEffect = extension
+      .addEffect('GenZoomBlur')
+      .setFullName(_('Zoom blur (optimized)'))
+      .setDescription(
+        _(
+          'Applies a Zoom blur that always covers the whole viewport, with a tunable base blur applied everywhere.'
+        )
+      )
+      .markAsOnlyWorkingFor2D()
+      .addIncludeFile('Extensions/Effects/gen-zoom-blur-pixi-filter.js')
+      .markAsNotWorkingForObjects();
+    const genZoomBlurProperties = genZoomBlurEffect.getProperties();
+    genZoomBlurProperties
+      .getOrCreate('centerX')
+      .setValue('0.5')
+      .setLabel(_('Center X (between 0 and 1, 0.5 is image middle)'))
+      .setType('number');
+    genZoomBlurProperties
+      .getOrCreate('centerY')
+      .setValue('0.5')
+      .setLabel(_('Center Y (between 0 and 1, 0.5 is image middle)'))
+      .setType('number');
+    genZoomBlurProperties
+      .getOrCreate('innerRadius')
+      .setValue('200')
+      .setLabel(_('Inner radius'))
+      .setType('number');
+    genZoomBlurProperties
+      .getOrCreate('strength')
+      .setValue('0.3')
+      .setLabel(_('strength (between 0 and 5)'))
+      .setType('number');
+    genZoomBlurProperties
+      .getOrCreate('padding')
+      .setValue('0')
+      .setLabel(_('Base blur'))
+      .setType('number')
+      .setDescription(
+        _(
+          'Blur applied everywhere, including in the sharp center. Ten units make one pixel of radius, so 1 is a very subtle 0.1 pixel blur and 80 is the 8 pixel maximum. 0 disables it.'
+        )
+      );
+
     return extension;
   },
   runExtensionSanityTests: function (gd, extension) {
