@@ -4,6 +4,7 @@ namespace gdjs {
     _fontManager: any;
     _text: PIXI.Text;
     _justCreated: boolean = true;
+    _crispRendering: boolean;
 
     constructor(
       runtimeObject: gdjs.TextRuntimeObject,
@@ -11,6 +12,11 @@ namespace gdjs {
     ) {
       this._object = runtimeObject;
       this._fontManager = instanceContainer.getGame().getFontManager();
+      // When the game is configured to not smooth textures ("nearest" scale
+      // mode, used by pixel perfect games), the text is post-processed to
+      // remove the font antialiasing done by the browser.
+      this._crispRendering =
+        instanceContainer.getGame().getScaleMode() === 'nearest';
       this._text = new PIXI.Text(' ', { align: 'left' });
       this._text.anchor.x = 0.5;
       this._text.anchor.y = 0.5;
@@ -34,6 +40,7 @@ namespace gdjs {
       if (this._justCreated) {
         //Work around a PIXI.js bug:
         this._text.updateText(false);
+        this._applyCrispRendering();
 
         //Width seems not to be correct when text is not rendered yet.
         this.updatePosition();
@@ -96,6 +103,7 @@ namespace gdjs {
       // see http://www.html5gamedevs.com/topic/16924-change-text-style-post-render/
       // @ts-ignore
       this._text.dirty = true;
+      this._applyCrispRendering();
     }
 
     updatePosition(): void {
@@ -144,6 +152,38 @@ namespace gdjs {
 
       //Work around a PIXI.js bug.
       this._text.updateText(false);
+      this._applyCrispRendering();
+    }
+
+    /**
+     * When the game uses the "nearest" scale mode, remove the font
+     * antialiasing done by the browser: threshold the alpha channel of the
+     * canvas the text was rasterized on, and sample the resulting texture
+     * with NEAREST scaling.
+     *
+     * Must be called after every re-rasterization of the text, and must
+     * leave the text with no pending re-rasterization (otherwise PixiJS
+     * would rasterize the text again at render time, restoring the
+     * antialiasing).
+     */
+    _applyCrispRendering(): void {
+      if (!this._crispRendering) return;
+
+      this._text.updateText(true);
+      const canvas = this._text.canvas;
+      const context = this._text.context;
+      if (canvas.width === 0 || canvas.height === 0) return;
+
+      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+      const data = imageData.data;
+      for (let i = 3; i < data.length; i += 4) {
+        data[i] = data[i] < 128 ? 0 : 255;
+      }
+      context.putImageData(imageData, 0, 0);
+
+      // Keep hard pixel edges when the text is scaled or the camera zooms.
+      this._text.texture.baseTexture.scaleMode = PIXI.SCALE_MODES.NEAREST;
+      this._text.texture.baseTexture.update();
     }
 
     getWidth(): float {
