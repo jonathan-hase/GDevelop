@@ -3,9 +3,10 @@
 describe('gdjs.TextRuntimeObject (crisp rendering with "nearest" scale mode)', () => {
   /**
    * @param {gdjs.RuntimeScene} runtimeScene
+   * @param {{characterSize?: number, bold?: boolean}=} options
    * @returns {gdjs.TextRuntimeObject}
    */
-  const makeTextRuntimeObject = (runtimeScene) =>
+  const makeTextRuntimeObject = (runtimeScene, options) =>
     new gdjs.TextRuntimeObject(runtimeScene, {
       name: 'text1',
       type: 'TextObject::Text',
@@ -13,9 +14,9 @@ describe('gdjs.TextRuntimeObject (crisp rendering with "nearest" scale mode)', (
       behaviors: [],
       effects: [],
       content: {
-        characterSize: 20,
+        characterSize: (options && options.characterSize) || 20,
         font: '',
-        bold: false,
+        bold: (options && options.bold) || false,
         italic: false,
         underlined: false,
         color: '0;0;0',
@@ -85,14 +86,15 @@ describe('gdjs.TextRuntimeObject (crisp rendering with "nearest" scale mode)', (
 
   /**
    * @param {'linear' | 'nearest'} scaleMode
+   * @param {{characterSize?: number, bold?: boolean}=} objectOptions
    */
-  const setUpObject = (scaleMode) => {
+  const setUpObject = (scaleMode, objectOptions) => {
     const runtimeGame = gdjs.getPixiRuntimeGame({
       propertiesOverrides: { scaleMode },
     });
     const runtimeScene = new gdjs.RuntimeScene(runtimeGame);
     loadScene(runtimeScene);
-    const object = makeTextRuntimeObject(runtimeScene);
+    const object = makeTextRuntimeObject(runtimeScene, objectOptions);
     runtimeScene.addObject(object);
     // Simulate the first frame, which forces a re-rasterization of the text.
     object.updatePreRender(runtimeScene);
@@ -113,30 +115,64 @@ describe('gdjs.TextRuntimeObject (crisp rendering with "nearest" scale mode)', (
       canvas.width,
       canvas.height
     ).data;
-    let hasOpaque = false;
-    let hasIntermediate = false;
+    let opaqueCount = 0;
+    let intermediateCount = 0;
     for (let i = 3; i < data.length; i += 4) {
-      if (data[i] === 255) hasOpaque = true;
-      else if (data[i] !== 0) hasIntermediate = true;
+      if (data[i] === 255) opaqueCount++;
+      else if (data[i] !== 0) intermediateCount++;
     }
-    return { hasOpaque, hasIntermediate };
+    return {
+      hasOpaque: opaqueCount > 0,
+      hasIntermediate: intermediateCount > 0,
+      intermediateRatio:
+        intermediateCount + opaqueCount === 0
+          ? 0
+          : intermediateCount / (intermediateCount + opaqueCount),
+    };
   };
 
-  it('removes the font antialiasing when the game uses the "nearest" scale mode', () => {
+  it('keeps the antialiasing of a small regular font (thresholding would make it unreadable)', () => {
     const { runtimeScene, pixiText } = setUpObject('nearest');
+
+    // NEAREST sampling is applied to all texts of a "nearest" game...
+    expect(pixiText.texture.baseTexture.scaleMode).to.be(
+      PIXI.SCALE_MODES.NEAREST
+    );
+    // ...but a small regular font rasterizes with mostly partial-coverage
+    // pixels: the de-antialiasing must be skipped to keep the text readable.
+    const stats = getAlphaStats(pixiText);
+    expect(stats.intermediateRatio).to.be.above(0.35);
+    expect(stats.hasIntermediate).to.be(true);
+
+    runtimeScene.unloadScene();
+  });
+
+  it('removes the font antialiasing when the rasterization is near-binary', () => {
+    const { runtimeScene, pixiText } = setUpObject('nearest', {
+      characterSize: 100,
+      bold: true,
+    });
 
     expect(pixiText.texture.baseTexture.scaleMode).to.be(
       PIXI.SCALE_MODES.NEAREST
     );
+    // A big bold text has a low fraction of partial-coverage (edge) pixels,
+    // so the thresholding is applied: all alpha values become 0 or 255.
     const { hasOpaque, hasIntermediate } = getAlphaStats(pixiText);
     expect(hasOpaque).to.be(true);
     expect(hasIntermediate).to.be(false);
+    // No re-rasterization must be pending, as PixiJS would do it at render
+    // time, restoring the antialiasing.
+    expect(pixiText.dirty).to.be(false);
 
     runtimeScene.unloadScene();
   });
 
   it('keeps the text de-antialiased when the text is changed', () => {
-    const { runtimeScene, object, pixiText } = setUpObject('nearest');
+    const { runtimeScene, object, pixiText } = setUpObject('nearest', {
+      characterSize: 100,
+      bold: true,
+    });
 
     object.setText('Changed!');
     const { hasOpaque, hasIntermediate } = getAlphaStats(pixiText);
@@ -147,15 +183,15 @@ describe('gdjs.TextRuntimeObject (crisp rendering with "nearest" scale mode)', (
   });
 
   it('keeps the text de-antialiased when the style is changed', () => {
-    const { runtimeScene, object, pixiText } = setUpObject('nearest');
+    const { runtimeScene, object, pixiText } = setUpObject('nearest', {
+      characterSize: 100,
+      bold: true,
+    });
 
-    // An odd character size maximizes the antialiasing done by the browser.
-    object.setCharacterSize(31);
+    object.setCharacterSize(72);
     const { hasOpaque, hasIntermediate } = getAlphaStats(pixiText);
     expect(hasOpaque).to.be(true);
     expect(hasIntermediate).to.be(false);
-    // No re-rasterization must be pending, as PixiJS would do it at render
-    // time, restoring the antialiasing.
     expect(pixiText.dirty).to.be(false);
 
     runtimeScene.unloadScene();

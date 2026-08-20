@@ -6,26 +6,70 @@ import { rgbStringToHexNumber } from '../../Utils/ColorTransformer';
 import * as PIXI from 'pixi.js-legacy';
 const gd: libGDevelop = global.gd;
 
+// Alpha value below which a pixel is made fully transparent (instead of
+// fully opaque) when de-antialiasing a text.
+const CRISP_ALPHA_THRESHOLD = 128;
+
+// Fraction of partial-coverage pixels (relative to all covered pixels) above
+// which thresholding would destroy the glyph shapes instead of just cleaning
+// their fringe. Pixel fonts rasterized on the pixel grid stay well below
+// this; regular fonts at small sizes, fallback glyphs (e.g. CJK rendered
+// with a system font) and lines landing on fractional pixel positions are
+// far above it.
+const CRISP_MAX_INTERMEDIATE_RATIO = 0.35;
+
 /**
  * Remove the font antialiasing done by the browser on the canvas the text
  * was rasterized on, by thresholding the alpha channel, and sample the
  * resulting texture with NEAREST scaling - to match what the game does at
  * runtime when the project uses the "nearest" scale mode.
+ *
+ * The thresholding is only applied when the rasterization is already
+ * near-binary (a pixel font at its native size, on the pixel grid) -
+ * thresholding a mostly partial-coverage rasterization would make the text
+ * unreadable, so the antialiasing is kept in that case.
+ *
+ * Rasterizes the text (consuming any pending re-rasterization, so PixiJS
+ * won't rasterize it again at render time, which would restore the
+ * antialiasing).
  */
 // $FlowFixMe[value-as-type]
 const applyCrispRenderingToPixiText = (pixiText: PIXI.Text) => {
-  const canvas = pixiText.canvas;
   const context = pixiText.context;
-  if (!canvas || !context || canvas.width === 0 || canvas.height === 0) return;
+  if (!context) return;
+  // Reduce fractional glyph positioning so that pixel fonts rasterize on
+  // the pixel grid (kerning and ligatures shift glyphs to sub-pixel
+  // offsets). Must be set before the rasterization done by updateText.
+  context.textRendering = 'optimizeSpeed';
+  context.fontKerning = 'none';
+
+  pixiText.updateText(true);
+  const canvas = pixiText.canvas;
+  if (!canvas || canvas.width === 0 || canvas.height === 0) return;
+
+  pixiText.texture.baseTexture.scaleMode = PIXI.SCALE_MODES.NEAREST;
 
   const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
   const data = imageData.data;
+  let intermediateCount = 0;
+  let opaqueCount = 0;
   for (let i = 3; i < data.length; i += 4) {
-    data[i] = data[i] < 128 ? 0 : 255;
+    const alpha = data[i];
+    if (alpha === 255) opaqueCount++;
+    else if (alpha !== 0) intermediateCount++;
+  }
+  const coveredCount = intermediateCount + opaqueCount;
+  if (
+    coveredCount === 0 ||
+    intermediateCount / coveredCount > CRISP_MAX_INTERMEDIATE_RATIO
+  ) {
+    return;
+  }
+
+  for (let i = 3; i < data.length; i += 4) {
+    data[i] = data[i] < CRISP_ALPHA_THRESHOLD ? 0 : 255;
   }
   context.putImageData(imageData, 0, 0);
-
-  pixiText.texture.baseTexture.scaleMode = PIXI.SCALE_MODES.NEAREST;
   pixiText.texture.baseTexture.update();
 };
 
@@ -243,7 +287,6 @@ export default class RenderedTextInstance extends RenderedInstance {
       // on every frame. This must be done before anything reads the text
       // width or height below, as this would trigger the re-rasterization.
       if (pixiText.dirty || pixiText.localStyleID !== pixiText.style.styleID) {
-        pixiText.updateText(true);
         applyCrispRenderingToPixiText(pixiText);
       }
     }

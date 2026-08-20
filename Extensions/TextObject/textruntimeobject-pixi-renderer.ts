@@ -1,4 +1,16 @@
 namespace gdjs {
+  // Alpha value below which a pixel is made fully transparent (instead of
+  // fully opaque) when de-antialiasing a text.
+  const CRISP_ALPHA_THRESHOLD = 128;
+
+  // Fraction of partial-coverage pixels (relative to all covered pixels)
+  // above which thresholding would destroy the glyph shapes instead of just
+  // cleaning their fringe. Pixel fonts rasterized on the pixel grid stay well
+  // below this; regular fonts at small sizes, fallback glyphs (e.g. CJK
+  // rendered with a system font) and lines landing on fractional pixel
+  // positions are far above it.
+  const CRISP_MAX_INTERMEDIATE_RATIO = 0.35;
+
   class TextRuntimeObjectPixiRenderer {
     _object: gdjs.TextRuntimeObject;
     _fontManager: any;
@@ -161,6 +173,12 @@ namespace gdjs {
      * canvas the text was rasterized on, and sample the resulting texture
      * with NEAREST scaling.
      *
+     * The thresholding is only applied when the rasterization is already
+     * near-binary (a pixel font at its native size, on the pixel grid) -
+     * thresholding a mostly partial-coverage rasterization (a regular font
+     * at a small size, a fallback font glyph) would make it unreadable, so
+     * the antialiasing is kept in that case.
+     *
      * Must be called after every re-rasterization of the text, and must
      * leave the text with no pending re-rasterization (otherwise PixiJS
      * would rasterize the text again at render time, restoring the
@@ -169,20 +187,42 @@ namespace gdjs {
     _applyCrispRendering(): void {
       if (!this._crispRendering) return;
 
+      const context = this._text.context;
+      // Reduce fractional glyph positioning so that pixel fonts rasterize on
+      // the pixel grid (kerning and ligatures shift glyphs to sub-pixel
+      // offsets). Must be set before the rasterization done by updateText.
+      // (Cast: these canvas properties are not in the bundled typings yet.)
+      (context as any).textRendering = 'optimizeSpeed';
+      (context as any).fontKerning = 'none';
+
       this._text.updateText(true);
       const canvas = this._text.canvas;
-      const context = this._text.context;
       if (canvas.width === 0 || canvas.height === 0) return;
-
-      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-      const data = imageData.data;
-      for (let i = 3; i < data.length; i += 4) {
-        data[i] = data[i] < 128 ? 0 : 255;
-      }
-      context.putImageData(imageData, 0, 0);
 
       // Keep hard pixel edges when the text is scaled or the camera zooms.
       this._text.texture.baseTexture.scaleMode = PIXI.SCALE_MODES.NEAREST;
+
+      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+      const data = imageData.data;
+      let intermediateCount = 0;
+      let opaqueCount = 0;
+      for (let i = 3; i < data.length; i += 4) {
+        const alpha = data[i];
+        if (alpha === 255) opaqueCount++;
+        else if (alpha !== 0) intermediateCount++;
+      }
+      const coveredCount = intermediateCount + opaqueCount;
+      if (
+        coveredCount === 0 ||
+        intermediateCount / coveredCount > CRISP_MAX_INTERMEDIATE_RATIO
+      ) {
+        return;
+      }
+
+      for (let i = 3; i < data.length; i += 4) {
+        data[i] = data[i] < CRISP_ALPHA_THRESHOLD ? 0 : 255;
+      }
+      context.putImageData(imageData, 0, 0);
       this._text.texture.baseTexture.update();
     }
 
